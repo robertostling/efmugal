@@ -586,12 +586,14 @@ struct corpus *read_corpus(const char *filename, const char *source_filename) {
 int main(int argc, const char **argv) {
     double t0;
 
-    if (argc != 3) {
-        fprintf(stderr, "%s <corpus index> <concept initialization>\n",
+    if (argc != 4) {
+        fprintf(stderr, "%s <corpus index> <concept initialization> "
+                        "<iterations>\n",
                 argv[0]);
         exit(EXIT_SUCCESS);
     }
     struct corpus *corpus = read_corpus(argv[1], argv[2]);
+    int n_iterations = atoi(argv[3]);
     if (corpus == NULL) exit(EXIT_FAILURE);
     printf("Done reading corpus.\n");
 
@@ -613,7 +615,7 @@ int main(int argc, const char **argv) {
     }
     printf("%.3fs\n", seconds()-t0);
 
-    for (int iter=0; iter<2; iter++) {
+    for (int iter=0; iter<n_iterations; iter++) {
         printf("Iteration %d...\n", iter+1);
         printf("  sampling alignmets... ");
         t0 = seconds();
