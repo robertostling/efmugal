@@ -152,7 +152,8 @@ void text_alignment_sample(
                 const token e = source_sentence->tokens[i];
                 uint32_t n = 0;
                 map_token_u32_get(ta->source_count + e, f, &n);
-                ps_sum += ta->inv_source_count_sum[e] * (count)n;
+                ps_sum += ta->inv_source_count_sum[e] *
+                          (ta->alpha + (count)n);
                 ps[i] = ps_sum;
             }
             const link new_i = links[j] =
@@ -181,7 +182,8 @@ void text_alignment_make_counts(struct text_alignment *ta, count alpha) {
     ta->alpha = alpha;
     for (size_t i=0; i<ta->source->vocabulary_size; i++) {
         map_token_u32_clear(ta->source_count + i);
-        ta->inv_source_count_sum[i] = alpha;
+        ta->inv_source_count_sum[i] =
+            alpha * (count)ta->target->vocabulary_size;
     }
     for (size_t sent=0; sent<ta->target->n_sentences; sent++) {
         link *links = ta->sentence_links[sent];
