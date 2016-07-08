@@ -255,7 +255,7 @@ static inline size_t random_unnormalized_cumulative_categorical32(
 }
 
 static inline size_t random_unnormalized_log_categorical32(
-        random_state *state, const float *log_p, size_t length)
+        random_state *state, const float *log_p, float lambda, size_t length)
 {
     float max_log_p = -FLT_MAX;
     for (size_t i=0; i<length; i++)
@@ -263,7 +263,7 @@ static inline size_t random_unnormalized_log_categorical32(
     float p[length];
     float p_sum = 0.0f;
     for (size_t i=0; i<length; i++) {
-        const float log_p_i = log_p[i] - max_log_p;
+        const float log_p_i = (log_p[i] - max_log_p) * lambda;
         const float p_i = expf(log_p_i);
         p_sum += p_i;
         p[i] = p_sum;

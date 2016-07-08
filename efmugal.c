@@ -389,12 +389,197 @@ count *sample_theta(
     return theta;
 }
 
+void sample_source_text_collapsed(
+        random_state *shared_state,
+        struct text *source,
+        struct text_alignment **text_ta, size_t n_texts,
+        count lexical_alpha, count source_alpha,
+        count lambda)
+{
+    for (size_t sent=0; sent<source->n_sentences; sent++) {
+        struct sentence *sentence = source->sentences[sent];
+        if (sentence != NULL) {
+            // links_to[text_idx][i] contains a map { f -> n } from word types
+            // in text_idx to the number of times it is aligned to position i
+            // in this sentence.
+            struct map_token_u32 links_to[n_texts][sentence->length];
+
+            // first, build the count maps in links_to
+            for (size_t text_idx=0; text_idx<n_texts; text_idx++) {
+                struct text_alignment *ta = text_ta[text_idx];
+                const struct sentence *target_sentence =
+                    ta->target->sentences[sent];
+                if (target_sentence == NULL)
+                    continue;
+                for (size_t i=0; i<sentence->length; i++)
+                    map_token_u32_create(&(links_to[text_idx][i]));
+                const link *links = ta->sentence_links[sent];
+                for (size_t j=0; j<target_sentence->length; j++) {
+                    map_token_u32_add(
+                            &(links_to[text_idx][links[j]]),
+                            target_sentence->tokens[j],
+                            1);
+                }
+            }
+
+            // then, do the actual sampling
+            for (size_t i=0; i<sentence->length; i++) {
+                // log-probabilities from which the new source word type will
+                // eventually be sampled
+                count log_p[source->vocabulary_size];
+                for (size_t e=0; e<source->vocabulary_size; e++)
+                    log_p[e] = 0.0;
+
+                const token old_e = sentence->tokens[i];
+
+                // subtract counts
+                // NOTE: this is almost identical to the code to add
+                // counts below, if you change one part, remember to change
+                // the other!
+                for (size_t text_idx=0; text_idx<n_texts; text_idx++) {
+                    struct text_alignment *ta = text_ta[text_idx];
+                    const struct sentence *target_sentence =
+                        ta->target->sentences[sent];
+                    if (target_sentence == NULL) continue;
+                    size_t len = links_to[text_idx][i].n_items;
+                    if (len == 0) continue;
+                    uint32_t n_list[len];
+                    token f_list[len];
+                    map_token_u32_items(
+                            &(links_to[text_idx][i]), f_list, n_list);
+                    size_t fertility = 0;
+                    for (size_t k=0; k<len; k++) {
+                        map_token_u32_add(
+                                ta->source_count + old_e,
+                                f_list[k], -n_list[k]);
+                        fertility += n_list[k];
+                    }
+                    ta->inv_source_count_sum[old_e] = (count)1.0 /
+                        (  (count)1.0/ta->inv_source_count_sum[old_e]
+                         - (count)fertility);
+                }
+
+                for (size_t text_idx=0; text_idx<n_texts; text_idx++) {
+                    struct text_alignment *ta = text_ta[text_idx];
+                    const struct sentence *target_sentence =
+                        ta->target->sentences[sent];
+                    if (target_sentence == NULL)
+                        continue;
+
+                    // target word type f_list[k] is aligned n_list[k] times
+                    // to this source token
+                    size_t len = links_to[text_idx][i].n_items;
+                    // if unaligned, this token does not affect log_p
+                    if (len == 0) continue;
+                    uint32_t n_list[len];
+                    token f_list[len];
+                    map_token_u32_items(
+                            &(links_to[text_idx][i]), f_list, n_list);
+
+                    // the total fertility (for this text_idx) of the source
+                    // token is the sum of n_list
+                    size_t fertility = 0;
+                    for (size_t k=0; k<len; k++)
+                        fertility += n_list[k];
+
+                    for (size_t e=0; e<source->vocabulary_size; e++) {
+                        // source_count is a map { f -> n } of how many times
+                        // source word type e is aligned to word type f in
+                        // text_idx
+                        struct map_token_u32 *source_count =
+                            ta->source_count + e;
+
+                        // now we compute the division of Equation (5.3)
+                        //
+                        // first we will multiply the factors in the
+                        // numerator, then divide by the factors in the
+                        // denominator
+                        count eq53 = 1.0;
+                        for (size_t k=0; k<len; k++) {
+                            const token f = f_list[k];
+                            const size_t n = n_list[k];
+                            // n_e_f is the number of times that e is aligned
+                            // to f, not counting this position
+                            uint32_t n_e_f = 0;
+                            map_token_u32_get(source_count, f, &n_e_f);
+                            // at step l of the loop:
+                            //   t = lexical_alpha + n_e_f + l
+                            // which is multiplied into the numerator
+                            count t = lexical_alpha + (count)n_e_f;
+                            for (size_t l=0; l<n; l++) {
+                                eq53 *= t;
+                                t += (count)1.0;
+                            }
+                        }
+                        // ta->inv_source_count_sum[e] contains
+                        //   1 / sum_f(alpha + n_e_f)
+                        count t = (count)1.0 / ta->inv_source_count_sum[e];
+                        count den = t;
+                        for (size_t l=1; l<fertility; l++) {
+                            den *= t;
+                            t += (count)1.0;
+                        }
+                        eq53 /= den;
+
+                        // finally, add logarithm of eq53 to log_p[e]
+#ifdef SINGLE_PRECISION
+                        // if the count datatype is float, use logf()
+                        //
+                        // note that this could be an approximation if the
+                        // APPROXIMATE_MATH flag is enabled in Makefile
+                        log_p[e] += logf(eq53);
+#else
+                        log_p[e] += log(eq53);
+#endif
+                    }
+                }
+
+                // sample a new source word type
+                //
+                // FIXME: note that if this is inside a parallel block,
+                // use random_split_state() -- see main() for an example
+                token new_e = random_unnormalized_log_categorical32(
+                        shared_state, log_p, lambda, source->vocabulary_size);
+                sentence->tokens[i] = new_e;
+
+                // add counts
+                // NOTE: this is almost identical to the code to subtract
+                // counts above, if you change one part, remember to change
+                // the other!
+                for (size_t text_idx=0; text_idx<n_texts; text_idx++) {
+                    struct text_alignment *ta = text_ta[text_idx];
+                    const struct sentence *target_sentence =
+                        ta->target->sentences[sent];
+                    if (target_sentence == NULL) continue;
+                    size_t len = links_to[text_idx][i].n_items;
+                    if (len == 0) continue;
+                    uint32_t n_list[len];
+                    token f_list[len];
+                    map_token_u32_items(
+                            &(links_to[text_idx][i]), f_list, n_list);
+                    size_t fertility = 0;
+                    for (size_t k=0; k<len; k++) {
+                        map_token_u32_add(
+                                ta->source_count + new_e,
+                                f_list[k], n_list[k]);
+                        fertility += n_list[k];
+                    }
+                    ta->inv_source_count_sum[new_e] = (count)1.0 /
+                        (  (count)1.0/ta->inv_source_count_sum[new_e]
+                         + (count)fertility);
+                }
+
+            }
+        }
+    }
+}
 
 void sample_source_text(
         random_state *shared_state,
         struct text *source,
         struct text_alignment **text_ta, size_t n_texts,
-        count lexical_alpha, count source_alpha)
+        count lexical_alpha, count source_alpha,
+        count lambda)
 {
     for (size_t i=1; i<n_texts; i++) {
         if (text_ta[i]->source != source) {
@@ -521,7 +706,7 @@ void sample_source_text(
         count **sent_p_e = p_e + source_token_index[sent];
         for (size_t i=0; i<source->sentences[sent]->length; i++) {
             source_sentence->tokens[i] = random_unnormalized_log_categorical32(
-                    &state, sent_p_e[i], source->vocabulary_size);
+                    &state, sent_p_e[i], lambda, source->vocabulary_size);
         }
     }
     printf(" %.3fs\n", seconds() - t0);
@@ -586,6 +771,8 @@ struct corpus *read_corpus(const char *filename, const char *source_filename) {
 }
 
 int main(int argc, const char **argv) {
+    const double lexical_alpha = 0.01;
+    const double concept_alpha = 1.0;
     double t0;
 
     if (argc != 4) {
@@ -613,11 +800,33 @@ int main(int argc, const char **argv) {
             state = random_split_state(&shared_state);
         }
         text_alignment_randomize(corpus->text_alignments[text_idx], &state);
-        text_alignment_make_counts(corpus->text_alignments[text_idx], 0.01);
+        text_alignment_make_counts(corpus->text_alignments[text_idx],
+                                   lexical_alpha);
     }
     printf("%.3fs\n", seconds()-t0);
 
-    for (int iter=0; iter<n_iterations; iter++) {
+    for (int iter=0; iter<10; iter++) {
+        printf("Alignment-only iteration %d...\n", iter+1);
+        printf("  sampling alignmets... ");
+        t0 = seconds();
+#pragma omp parallel for
+        for (size_t text_idx=0; text_idx<corpus->n_texts; text_idx++) {
+            random_state state;
+#pragma omp critical
+            {
+                state = random_split_state(&shared_state);
+            }
+            text_alignment_sample(corpus->text_alignments[text_idx], &state);
+        }
+        printf("%.3fs\n", seconds()-t0);
+    }
+
+    //count lambda = (count)0.0;
+    //const count lambda_step = (count)1.0 / (count)(n_iterations-1);
+    count lambda = 1.0;
+    const count lambda_step = 0.0;
+
+    for (int iter=0; iter<n_iterations; iter++, lambda+=lambda_step) {
         printf("Iteration %d...\n", iter+1);
         printf("  sampling alignmets... ");
         t0 = seconds();
@@ -631,10 +840,15 @@ int main(int argc, const char **argv) {
             text_alignment_sample(corpus->text_alignments[text_idx], &state);
         }
         printf("%.3fs\n", seconds()-t0);
-        printf("  sampling concepts...\n");
-        sample_source_text(&shared_state, corpus->source,
+        printf("  sampling concepts (lambda = %.3f)...\n", lambda);
+        sample_source_text_collapsed(&shared_state, corpus->source,
                            corpus->text_alignments, corpus->n_texts,
-                           0.01, 1.0);
+                           lexical_alpha, concept_alpha,
+                           lambda);
+        //sample_source_text(&shared_state, corpus->source,
+        //                   corpus->text_alignments, corpus->n_texts,
+        //                   lexical_alpha, concept_alpha,
+        //                   lambda);
         printf("  iteration finished: %.3fs\n", seconds()-t0);
     }
 

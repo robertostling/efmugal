@@ -1,5 +1,5 @@
 import os.path
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 def read_links(filename):
     with open(filename, 'r') as f:
@@ -24,17 +24,25 @@ def make_multilingual(concepts_filename, index_filename):
     vocs = list(map(read_voc, voc_filenames))
     links = list(map(read_links, links_filenames))
     texts = list(map(read_text, text_filenames))
+    lexicon = defaultdict(Counter)
     assert len(vocs) == len(links)
     assert len(links) == len(texts)
     for i in range(len(concepts)):
         source_sent = concepts[i]
         translations = [[] for _ in source_sent]
-        for text_voc, text_links, text in zip(vocs, links, texts):
+        for lang, (text_voc, text_links, text) in enumerate(
+                zip(vocs, links, texts)):
             target_sent = [text_voc[x] for x in text[i]]
             for token, a in zip(target_sent, text_links[i]):
+                lexicon[source_sent[a]].update([token])
                 translations[a].append(token)
         print(('\n'+'-'*72+'\n').join(
             ['\n'.join(words) for words in translations]))
+
+    print('LEXICON')
+    for concept, counts in sorted(lexicon.items()):
+        print('  %d  %s' % (concept,
+            ', '.join('%s:%d' % t for t in counts.most_common(10))))
 
 if __name__ == '__main__':
     import sys
