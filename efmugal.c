@@ -808,6 +808,7 @@ int main(int argc, const char **argv) {
     for (int iter=0; iter<10; iter++) {
         printf("Alignment-only iteration %d...\n", iter+1);
         printf("  sampling alignmets... ");
+        fflush(stdout);
         t0 = seconds();
 #pragma omp parallel for
         for (size_t text_idx=0; text_idx<corpus->n_texts; text_idx++) {
@@ -829,6 +830,7 @@ int main(int argc, const char **argv) {
     for (int iter=0; iter<n_iterations; iter++, lambda+=lambda_step) {
         printf("Iteration %d...\n", iter+1);
         printf("  sampling alignmets... ");
+        fflush(stdout);
         t0 = seconds();
 #pragma omp parallel for
         for (size_t text_idx=0; text_idx<corpus->n_texts; text_idx++) {
@@ -841,6 +843,7 @@ int main(int argc, const char **argv) {
         }
         printf("%.3fs\n", seconds()-t0);
         printf("  sampling concepts (lambda = %.3f)...\n", lambda);
+        fflush(stdout);
         sample_source_text_collapsed(&shared_state, corpus->source,
                            corpus->text_alignments, corpus->n_texts,
                            lexical_alpha, concept_alpha,
